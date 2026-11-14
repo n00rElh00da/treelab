@@ -1,0 +1,13 @@
+customer_id,tenure,monthly_charges,contract,payment_method,senior_citizen,churn
+C001,1,29.85,Month-to-month,Electronic check,0,No
+C002,34,56.95,One year,Mailed check,0,No
+C003,2,53.85,Month-to-month,Mailed check,0,Yes
+C004,45,42.30,One year,Bank transfer,0,No
+C005,4,70.70,Month-to-month,Electronic check,0,Yes
+C006,22,89.10,Two year,Credit card,0,No
+C007,10,75.50,Month-to-month,Electronic check,1,Yes
+C008,62,24.80,Two year,Bank transfer,0,No
+C009,13,79.85,Month-to-month,Electronic check,0,Yes
+C010,9,45.20,Month-to-month,Mailed check,0,No
+C011,29,61.35,One year,Credit card,0,No
+C012,3,95.60,Month-to-month,Electronic check,1,Yes

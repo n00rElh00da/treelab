@@ -1,0 +1,56 @@
+# TreeLab — private ML experimentation workspace
+
+TreeLab keeps the supplied prototype's dark research-console interface but now connects it to a real Python backend. Users can register and log in, upload CSV files, inspect persisted versions, configure preprocessing, train scikit-learn Decision Trees/Random Forests, run FLAML AutoML, compare experiments, and review real explainability artifacts.
+
+## What changed from the prototype
+
+The active application no longer seeds Iris, Breast Cancer, Wine, or mock experiment records. The only built-in catalog entry is a small public Customer Churn fixture used for onboarding and development. It is separate from real user data. Uploaded datasets are private to the authenticated owner, versioned, persisted, and soft-deleted so accidental deletion does not erase real records.
+
+Decision Tree criterion is intentionally limited to `gini` and `entropy`. Controlled AutoML accepts a time budget in seconds from 1 through 90. Extended AutoML delegates estimator selection to a broader backend-defined FLAML search space rather than a fixed user checklist.
+
+## Local development
+
+The recommended path is Docker Compose, which runs PostgreSQL and the FastAPI app locally without provisioning any cloud resources:
+
+```bash
+cp .env.example .env
+# Edit SESSION_SECRET before sharing the environment.
+docker compose up --build
+```
+
+Open `http://localhost:3000`. The first registered account becomes `admin`; subsequent accounts are `user`. The Compose command applies Alembic migrations and seeds the public Customer Churn fixture. To run the app directly on a host Python installation, start PostgreSQL separately, install the dependencies, export `DATABASE_URL`, then run:
+
+```bash
+python3 -m pip install -r requirements.txt
+alembic upgrade head
+python -m app.seed_demo
+uvicorn app.main:app --host 0.0.0.0 --port 3000
+```
+
+The application reads `DATABASE_URL`, `SESSION_SECRET`, `COOKIE_SECURE`, `COOKIE_SAMESITE`, `PORT`, and upload limits from the environment. `DATABASE_URL` is required for authenticated persistence; there is no committed database credential fallback. Never commit `.env` or credentials. For Preview, use the project’s protected environment/secret configuration for `DATABASE_URL` and `SESSION_SECRET`; without a DSN, `/api/health` reports an explicit degraded/unconfigured state and the app does not silently fall back to mock data.
+
+## Database and migrations
+
+The PostgreSQL schema is defined in `app/models.py` and created through checked-in Alembic migrations under `alembic/versions/`. Run `alembic upgrade head` for a new environment and `alembic downgrade -1` only when intentionally rolling back. Migration `0002_cleanup_legacy_mock_records` targets only known demo slugs and `is_demo = true`; it does not target user-owned data. The initial Customer Churn fixture is inserted only by the explicit `python -m app.seed_demo` command.
+
+The initial schema includes users, sessions, datasets, immutable dataset versions, preprocessing configurations, experiments, and serialized model artifacts. Every user-owned query is scoped by the authenticated owner ID. Demo datasets are read-only and public to authenticated users.
+
+## API overview
+
+`/api/auth/register`, `/api/auth/login`, `/api/auth/logout`, and `/api/auth/me` provide application authentication. `/api/datasets` provides private dataset listing, CSV creation, metadata edits, soft deletion, version uploads, and previews. `/api/experiments` provides owner-scoped history, real model training, and real FLAML AutoML. `/api/health` reports application/database readiness. `/manus-routes.json` is served as the required page manifest.
+
+## Azure for Students deployment preparation
+
+This repository is prepared for an Azure deployment but does not provision or deploy anything. A future low-cost deployment can use Azure Database for PostgreSQL Flexible Server plus Azure App Service or Azure Container Apps. Build the container from the included `Dockerfile`, set `PORT=3000`, and configure these runtime values in Azure application settings/secrets:
+
+- `DATABASE_URL=postgresql+psycopg://<user>:<password>@<server>.postgres.database.azure.com:5432/<db>?sslmode=require`
+- `SESSION_SECRET=<long random secret>`
+- `COOKIE_SECURE=true`
+- `COOKIE_SAMESITE=none`
+- `MAX_UPLOAD_BYTES`, `MAX_UPLOAD_ROWS`, and `MAX_UPLOAD_COLUMNS` as appropriate
+
+Allow the application network access to PostgreSQL, require TLS, run `alembic upgrade head` as a release step before starting the new container, and run the demo seed only in a non-production environment. Use Azure Key Vault or App Service secret settings rather than committing credentials. Resource creation, domain setup, billing, and deployment require the owner’s explicit approval and are intentionally not performed here.
+
+## Validation
+
+The backend can be syntax-checked with `python3 -m compileall -q app alembic`, imported with `python3 -c 'from app.main import app'`, and checked with `node --check script.js`. With PostgreSQL available, run the migrations, seed fixture, start the app, and verify `GET /api/health`, `GET /manus-routes.json`, registration/login, CSV upload, training, and AutoML through the UI/API. The sandbox used for this implementation does not provide a running local PostgreSQL daemon or Docker, so database execution remains documented and ready for the user’s local environment.

@@ -14,7 +14,7 @@ The recommended path is Docker Compose, which runs PostgreSQL and the FastAPI ap
 
 ```bash
 cp .env.example .env
-# Edit SESSION_SECRET before sharing the environment.
+# Set unique POSTGRES_PASSWORD and SESSION_SECRET values before sharing the environment.
 docker compose up --build
 ```
 
@@ -27,7 +27,7 @@ python -m app.seed_demo
 uvicorn app.main:app --host 0.0.0.0 --port 3000
 ```
 
-The application reads `DATABASE_URL`, `SESSION_SECRET`, `COOKIE_SECURE`, `COOKIE_SAMESITE`, `PORT`, and upload limits from the environment. `DATABASE_URL` is required for authenticated persistence; there is no committed database credential fallback. Never commit `.env` or credentials. For Preview, use the project’s protected environment/secret configuration for `DATABASE_URL` and `SESSION_SECRET`; without a DSN, `/api/health` reports an explicit degraded/unconfigured state and the app does not silently fall back to mock data.
+The application reads `DATABASE_URL`, `SESSION_SECRET`, `APP_ENV`, `COOKIE_SECURE`, `COOKIE_SAMESITE`, `PORT`, and upload limits from the environment. `DATABASE_URL` is required for authenticated persistence; there is no committed database credential fallback. Passwords use Argon2id when the pinned `argon2-cffi` dependency is installed, while the verifier retains compatibility with the prior scrypt format for constrained migrations. Browser mutation requests with an Origin or Referer are checked against the forwarded request origin or configured CORS origins. Never commit `.env` or credentials. Compose keeps PostgreSQL on the private container network rather than publishing port 5432 to the host. For Preview and production, set `APP_ENV=production` and `COOKIE_SECURE=true`, and use protected environment/secret configuration for `DATABASE_URL`, `SESSION_SECRET`, and `POSTGRES_PASSWORD`; the application rejects production settings that leave secure cookies disabled. Without a DSN, `/api/health` reports an explicit degraded/unconfigured state and the app does not silently fall back to mock data.
 
 ## Database and migrations
 
@@ -37,7 +37,7 @@ The initial schema includes users, sessions, datasets, immutable dataset version
 
 ## API overview
 
-`/api/auth/register`, `/api/auth/login`, `/api/auth/logout`, and `/api/auth/me` provide application authentication. `/api/datasets` provides private dataset listing, CSV creation, metadata edits, soft deletion, version uploads, and previews. `/api/experiments` provides owner-scoped history, real model training, and real FLAML AutoML. `/api/health` reports application/database readiness. `/manus-routes.json` is served as the required page manifest.
+`/api/auth/register`, `/api/auth/login`, `/api/auth/logout`, and `/api/auth/me` provide application authentication. `/api/datasets` provides private dataset listing, CSV creation, metadata edits, soft deletion, version uploads, and previews. `/api/experiments` provides owner-scoped history, real model training, owner-scoped serialized model downloads, and real FLAML AutoML. Invalid preprocessing options, target/feature leakage, and datasets without a usable target are rejected with actionable errors. `/api/health` reports application/database readiness. `/manus-routes.json` is served as the required page manifest.
 
 ## Azure for Students deployment preparation
 
@@ -54,3 +54,13 @@ Allow the application network access to PostgreSQL, require TLS, run `alembic up
 ## Validation
 
 The backend can be syntax-checked with `python3 -m compileall -q app alembic`, imported with `python3 -c 'from app.main import app'`, and checked with `node --check script.js`. With PostgreSQL available, run the migrations, seed fixture, start the app, and verify `GET /api/health`, `GET /manus-routes.json`, registration/login, CSV upload, training, and AutoML through the UI/API. The sandbox used for this implementation does not provide a running local PostgreSQL daemon or Docker, so database execution remains documented and ready for the user’s local environment.
+
+Development tests are declared in `requirements-dev.txt`:
+
+```bash
+python3 -m pytest -q
+python3 -m playwright install chromium
+TREELAB_E2E_BASE_URL=http://localhost:3000 python3 -m pytest tests/e2e -q
+```
+
+The browser Dataset CRUD test is skipped unless `TREELAB_E2E_ALLOW_MUTATION=1` and `TREELAB_E2E_DATABASE_URL` identify an explicitly isolated test database. It must not be run against a normal user database.

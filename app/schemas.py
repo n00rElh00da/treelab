@@ -1,5 +1,5 @@
 from typing import Any, Literal
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 
 class UserOut(BaseModel):
@@ -30,12 +30,25 @@ class DatasetUpdate(BaseModel):
 class PreprocessIn(BaseModel):
     target: str
     features: list[str]
-    missing: str = "Median imputation"
-    encoding: str = "One-hot encoding"
-    scaling: str = "Standard scaler"
-    duplicates: str = "Keep first row"
-    imbalance: str = "Balanced class weights"
+    missing: Literal["Median imputation", "Mean imputation", "Drop rows", "Flag as feature"] = "Median imputation"
+    encoding: Literal["One-hot encoding", "Ordinal encoding"] = "One-hot encoding"
+    scaling: Literal["Standard scaler", "Robust scaler", "Min-max scaler", "No scaling"] = "Standard scaler"
+    duplicates: Literal["Keep first row", "Drop duplicates"] = "Keep first row"
+    imbalance: Literal["Balanced class weights", "No adjustment"] = "Balanced class weights"
     split: int = Field(default=80, ge=60, le=90)
+
+
+def _validate_integer_parameter(value: Any, name: str, minimum: int, allow_none: bool = False) -> None:
+    if allow_none and (value is None or value == "None"):
+        return
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer of at least {minimum}")
+    try:
+        integer = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer of at least {minimum}") from exc
+    if integer < minimum:
+        raise ValueError(f"{name} must be an integer of at least {minimum}")
 
 
 class TrainIn(PreprocessIn):
@@ -43,13 +56,19 @@ class TrainIn(PreprocessIn):
     model_type: Literal["Decision Tree", "Random Forest"]
     parameters: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("parameters")
-    @classmethod
-    def validate_tree_criterion(cls, value: dict[str, Any]) -> dict[str, Any]:
-        criterion = value.get("criterion")
+    @model_validator(mode="after")
+    def validate_parameters(self) -> "TrainIn":
+        criterion = self.parameters.get("criterion")
         if criterion and criterion not in {"gini", "entropy"}:
             raise ValueError("Decision Tree criterion must be gini or entropy")
-        return value
+        if "classWeight" in self.parameters and self.parameters["classWeight"] not in {"Balanced", "None"}:
+            raise ValueError("parameters.classWeight must be Balanced or None")
+        for key, minimum in (("minSplit", 2), ("minLeaf", 1), ("estimators", 1)):
+            if key in self.parameters:
+                _validate_integer_parameter(self.parameters[key], f"parameters.{key}", minimum)
+        if "maxDepth" in self.parameters:
+            _validate_integer_parameter(self.parameters["maxDepth"], "parameters.maxDepth", 1, allow_none=True)
+        return self
 
 
 class AutoMLIn(PreprocessIn):

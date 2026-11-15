@@ -1,6 +1,8 @@
 from __future__ import annotations
 import hashlib
 import io
+import csv
+from pathlib import Path
 from typing import Any
 import pandas as pd
 from fastapi import HTTPException
@@ -22,36 +24,60 @@ def infer_target(columns: list[str], frame: pd.DataFrame) -> tuple[str | None, l
     preferred = ["target", "label", "class", "y", "churn", "outcome", "diagnosis"]
     candidates = [normalized[name] for name in preferred if name in normalized]
     for column in columns:
-        nunique = int(frame[column].nunique(dropna=True))
+        nunique = frame[column].dropna().drop_duplicates().shape[0]
         if column not in candidates and 2 <= nunique <= min(20, max(2, len(frame) // 10)):
             candidates.append(column)
     return (candidates[0] if candidates else None, candidates)
 
 
+def _decode_csv(content: bytes) -> str:
+    last_error: Exception | None = None
+    for encoding in ("utf-8-sig", "utf-8", "latin-1"):
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError as exc:
+            last_error = exc
+    raise HTTPException(400, f"Unable to decode CSV: {last_error}")
+
+
+def _detect_delimiter(text: str) -> str:
+    sample = text[:65536]
+    try:
+        return csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
+    except csv.Error:
+        return ","
+
+
 def parse_csv(content: bytes, filename: str) -> dict[str, Any]:
     if not content:
         raise HTTPException(400, "The uploaded CSV is empty")
+    if filename and Path(filename).suffix.lower() not in {"", ".csv"}:
+        raise HTTPException(400, "Only .csv files are supported")
     if len(content) > settings.max_upload_bytes:
         raise HTTPException(413, f"CSV exceeds the {settings.max_upload_bytes // (1024 * 1024)} MB upload limit")
-    frame = None
-    last_error = None
-    for encoding in ("utf-8-sig", "utf-8", "latin-1"):
-        try:
-            frame = pd.read_csv(io.BytesIO(content), encoding=encoding)
-            break
-        except (UnicodeDecodeError, pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
-            last_error = exc
-    if frame is None:
-        raise HTTPException(400, f"Unable to parse CSV: {last_error}")
+    text = _decode_csv(content)
+    delimiter = _detect_delimiter(text)
+    header_reader = csv.reader(io.StringIO(text), delimiter=delimiter)
+    raw_header = next(header_reader, None)
+    if not raw_header:
+        raise HTTPException(400, "The uploaded CSV has no header row")
+    columns = [str(column).strip() for column in raw_header]
+    if len(columns) < 2:
+        raise HTTPException(400, "CSV must contain at least one target column and one feature column")
+    if any(not column for column in columns) or len(set(columns)) != len(columns):
+        raise HTTPException(400, "CSV columns must be non-empty and unique")
+    try:
+        frame = pd.read_csv(io.StringIO(text), sep=delimiter, engine="python")
+    except (pd.errors.ParserError, pd.errors.EmptyDataError, ValueError) as exc:
+        raise HTTPException(400, f"Unable to parse CSV: {exc}") from exc
     if frame.empty:
         raise HTTPException(400, "The uploaded CSV has no data rows")
     if len(frame) > settings.max_upload_rows:
         raise HTTPException(413, f"CSV exceeds the {settings.max_upload_rows:,} row limit")
     if len(frame.columns) > settings.max_upload_columns:
         raise HTTPException(413, f"CSV exceeds the {settings.max_upload_columns} column limit")
-    columns = [str(column).strip() for column in frame.columns]
-    if any(not column for column in columns) or len(set(columns)) != len(columns):
-        raise HTTPException(400, "CSV columns must be non-empty and unique")
+    if len(frame.columns) != len(columns):
+        raise HTTPException(400, "CSV rows do not match the header column count")
     frame.columns = columns
     if any(frame[column].notna().sum() == 0 for column in columns):
         raise HTTPException(400, "CSV contains an entirely empty column")
@@ -65,8 +91,8 @@ def parse_csv(content: bytes, filename: str) -> dict[str, Any]:
             "kind": kind,
             "dtype": str(series.dtype),
             "nullable": bool(series.isna().any()),
-            "missing": int(series.isna().sum()),
-            "unique": int(series.nunique(dropna=True)),
+            "missing": series.isna().to_numpy().sum().item(),
+            "unique": series.dropna().drop_duplicates().shape[0],
             "sample_values": [_json_value(item) for item in series.dropna().head(3).tolist()],
             "is_target_candidate": column in candidates,
         })

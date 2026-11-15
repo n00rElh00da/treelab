@@ -1,10 +1,12 @@
 from functools import lru_cache
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     database_url: str = ""
     session_secret: str = "local-development-only-change-me"
+    app_env: str = "development"
     cookie_name: str = "webdev_app_session"
     cookie_secure: bool = False
     cookie_samesite: str = "lax"
@@ -16,6 +18,12 @@ class Settings(BaseSettings):
     cors_origins: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", case_sensitive=False)
+
+    @model_validator(mode="after")
+    def validate_cookie_security(self) -> "Settings":
+        if self.app_env.lower() in {"production", "prod"} and not self.cookie_secure:
+            raise ValueError("COOKIE_SECURE must be true in production")
+        return self
 
     @property
     def cors_origin_list(self) -> list[str]:

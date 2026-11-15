@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from .config import get_settings
@@ -14,6 +15,8 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 
 
 def get_db() -> Generator[Session, None, None]:
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Database is not configured")
     db = SessionLocal()
     try:
         yield db

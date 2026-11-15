@@ -55,6 +55,8 @@ async def create_dataset(name: str = Form(...), description: str = Form(""), tar
     content = await file.read()
     profile = parse_csv(content, file.filename or "dataset.csv")
     target = target_column or profile["target"]
+    if not target:
+        raise HTTPException(400, "No usable target column was detected; provide a dataset with a bounded target or choose a target column")
     if target and target not in [item["name"] for item in profile["schema"]]:
         raise HTTPException(400, "Selected target column does not exist")
     dataset = Dataset(owner_id=user.id, slug=f"upload-{profile['content_hash'][:12]}", name=name.strip() or (file.filename or "Uploaded dataset"), description=description.strip(), task_type="classification", target_column=target, is_demo=False)

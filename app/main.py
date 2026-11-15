@@ -1,8 +1,9 @@
 from __future__ import annotations
 from pathlib import Path
-from fastapi import FastAPI
+from urllib.parse import urlsplit
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from .api import auth, datasets, experiments
@@ -13,6 +14,23 @@ settings = get_settings()
 ROOT = Path(__file__).resolve().parent.parent
 
 app = FastAPI(title="TreeLab API", version="1.0.0")
+
+
+@app.middleware("http")
+async def same_origin_mutations(request: Request, call_next):
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        candidate = request.headers.get("origin") or request.headers.get("referer")
+        if candidate:
+            parsed = urlsplit(candidate)
+            forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+            forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
+            request_origin = f"{forwarded_proto}://{forwarded_host}" if forwarded_host else ""
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+            if origin not in set(settings.cors_origin_list) and origin != request_origin:
+                return JSONResponse(status_code=403, content={"detail": "Cross-origin mutation rejected"})
+    return await call_next(request)
+
+
 if settings.cors_origin_list:
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 

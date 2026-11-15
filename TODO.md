@@ -33,7 +33,7 @@
 - [x] Provide real accuracy, precision, recall, F1, applicable ROC-AUC/classification report, and failure handling.
 
 ## 6. Real explainability and review
-- [ ] Compute and persist model feature importance, permutation importance, prediction probabilities, sample predictions, and a tree/estimator representation when supported.
+- [x] Compute and persist model feature importance, permutation importance, prediction probabilities, sample predictions, and a tree/estimator representation when supported.
 - [x] Populate the existing explainability, comparison, and experiment history surfaces from persisted results.
 - [x] Ensure comparison can only compare experiments owned by the current user and supports empty/insufficient-selection states.
 

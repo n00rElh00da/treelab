@@ -1,17 +1,18 @@
 from __future__ import annotations
-import io
 import pickle
 from datetime import datetime, timezone
 from typing import Any
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import or_, select
+from fastapi.responses import Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from ..auth import get_current_user
 from ..db import get_db
 from ..models import DatasetVersion, Experiment, ModelArtifact, PreprocessingConfig, User
 from ..schemas import AutoMLIn, ExperimentOut, TrainIn
 from ..services.automl import run_automl
+from ..services.profiling import parse_csv
 from ..services.training import TrainingError, train_classifier
 from .datasets import accessible_dataset, active_version
 
@@ -31,11 +32,15 @@ def clean(value: Any) -> Any:
 
 
 def frame_for(version: DatasetVersion) -> pd.DataFrame:
-    return pd.read_csv(io.BytesIO(version.raw_csv))
+    return parse_csv(version.raw_csv, version.original_filename)["frame"]
 
 
 def config_from(payload: TrainIn | AutoMLIn) -> dict[str, Any]:
     return {"target": payload.target, "features": payload.features, "missing": payload.missing, "encoding": payload.encoding, "scaling": payload.scaling, "duplicates": payload.duplicates, "imbalance": payload.imbalance, "split": payload.split}
+
+
+def model_parameters(payload: TrainIn, config: dict[str, Any]) -> dict[str, Any]:
+    return {**payload.parameters, "classWeight": "Balanced" if config["imbalance"] == "Balanced class weights" else "None"}
 
 
 def to_out(experiment: Experiment) -> ExperimentOut:
@@ -50,6 +55,11 @@ def save_result(db: Session, user: User, dataset_id: str, version: DatasetVersio
     db.commit()
     db.refresh(experiment)
     return experiment
+
+
+def save_failure(db: Session, user: User, dataset_id: str, version: DatasetVersion, model_type: str, parameters: dict[str, Any], error: Exception) -> None:
+    db.add(Experiment(owner_id=user.id, dataset_id=dataset_id, dataset_version_id=version.id, model_type=model_type, status="failed", parameters=clean(parameters), metrics={}, explainability={}, duration_ms=0, error=str(error)))
+    db.commit()
 
 
 @router.get("", response_model=list[ExperimentOut])
@@ -68,6 +78,14 @@ def get_experiment(experiment_id: str, db: Session = Depends(get_db), user: User
     return to_out(experiment)
 
 
+@router.get("/{experiment_id}/model")
+def get_model(experiment_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    artifact = db.scalar(select(ModelArtifact).where(ModelArtifact.experiment_id == experiment_id, ModelArtifact.owner_id == user.id))
+    if not artifact:
+        raise HTTPException(404, "Model artifact not found")
+    return Response(content=artifact.serialized_model, media_type="application/octet-stream", headers={"Content-Disposition": f'attachment; filename="treelab-{experiment_id}.pkl"'})
+
+
 @router.post("/train", response_model=ExperimentOut, status_code=201)
 def train(payload: TrainIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     dataset = accessible_dataset(db, payload.dataset_id, user)
@@ -75,12 +93,15 @@ def train(payload: TrainIn, db: Session = Depends(get_db), user: User = Depends(
     if not version:
         raise HTTPException(400, "Dataset has no active version")
     config = config_from(payload)
+    effective_parameters = model_parameters(payload, config)
+    parameters = {**effective_parameters, "preprocessing": config}
     try:
-        result = train_classifier(frame_for(version), payload.model_type, config, payload.parameters)
+        result = train_classifier(frame_for(version), payload.model_type, config, effective_parameters)
     except TrainingError as exc:
+        save_failure(db, user, dataset.id, version, payload.model_type, parameters, exc)
         raise HTTPException(422, str(exc)) from exc
     db.add(PreprocessingConfig(owner_id=user.id, dataset_version_id=version.id, **config))
-    return save_result(db, user, dataset.id, version, payload.model_type, {**payload.parameters, "preprocessing": config}, result)
+    return to_out(save_result(db, user, dataset.id, version, payload.model_type, parameters, result))
 
 
 @router.post("/automl", response_model=ExperimentOut, status_code=201)
@@ -90,9 +111,11 @@ def automl(payload: AutoMLIn, db: Session = Depends(get_db), user: User = Depend
     if not version:
         raise HTTPException(400, "Dataset has no active version")
     config = config_from(payload)
+    parameters = {"mode": payload.mode, "time_budget": payload.time_budget, "metric": payload.metric, "validation": payload.validation, "preprocessing": config}
     try:
-        result = run_automl(frame_for(version), config, payload.mode, payload.time_budget, payload.metric)
+        result = run_automl(frame_for(version), {**config, "validation": payload.validation}, payload.mode, payload.time_budget, payload.metric)
     except TrainingError as exc:
+        save_failure(db, user, dataset.id, version, f"AutoML · {payload.mode}", parameters, exc)
         raise HTTPException(422, str(exc)) from exc
     db.add(PreprocessingConfig(owner_id=user.id, dataset_version_id=version.id, **config))
-    return save_result(db, user, dataset.id, version, result["model_type"], {**result["parameters"], "preprocessing": config, "validation": payload.validation}, result)
+    return to_out(save_result(db, user, dataset.id, version, result["model_type"], {**result["parameters"], "preprocessing": config, "validation": payload.validation}, result))

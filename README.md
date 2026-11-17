@@ -48,6 +48,8 @@ Supabase provides PostgreSQL; no Supabase API key is required by this applicatio
 1. Create a Supabase project and copy its PostgreSQL connection string. Use the
    `postgresql+psycopg` scheme and append `?sslmode=require`:
    `postgresql+psycopg://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require`
+   A standard `postgresql://...?...sslmode=require` URL is also supported through
+   the explicitly pinned `psycopg2-binary` dependency.
 2. Push this repository to GitHub and create a Render Blueprint from the repository.
    Render will read `render.yaml` and build the Docker service.
 3. In Render, set the secret `DATABASE_URL` to the Supabase TLS connection string.

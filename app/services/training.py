@@ -1,5 +1,6 @@
 from __future__ import annotations
 import io
+import logging
 import pickle
 import time
 from typing import Any
@@ -14,10 +15,47 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import MinMaxScaler, OneHotEncoder, OrdinalEncoder, RobustScaler, StandardScaler
 from sklearn.tree import DecisionTreeClassifier, export_text
 from sklearn.ensemble import RandomForestClassifier
+from ..config import get_settings
 
+logger = logging.getLogger(__name__)
 
 class TrainingError(ValueError):
     pass
+
+
+def _permutation_importance(
+    estimator: Any,
+    transformed: Any,
+    target: Any,
+    feature_names: list[str],
+    sample_limit: int,
+    target_transformer: Any = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    try:
+        sample_count = min(len(target), max(1, sample_limit))
+        sample_indices = np.arange(sample_count)
+        sampled_target = target.iloc[sample_indices] if hasattr(target, "iloc") else target[sample_indices]
+        if target_transformer is not None:
+            sampled_target = target_transformer.transform(sampled_target)
+        permutation = permutation_importance(
+            estimator,
+            transformed[sample_indices],
+            sampled_target,
+            n_repeats=4,
+            random_state=42,
+            scoring="f1_weighted",
+        )
+        return (
+            sorted(
+                [{"feature": name, "importance": float(value)} for name, value in zip(feature_names, permutation.importances_mean)],
+                key=lambda item: item["importance"],
+                reverse=True,
+            )[:30],
+            None,
+        )
+    except Exception as exc:
+        logger.exception("Explainability permutation importance failed")
+        return [], f"Permutation importance unavailable: {type(exc).__name__}: {exc}"
 
 
 def _prediction_analysis(
@@ -235,11 +273,13 @@ def train_classifier(frame: pd.DataFrame, model_type: str, config: dict[str, Any
     native = getattr(model, "feature_importances_", np.zeros(len(feature_names)))
     importance = sorted([{"feature": name, "importance": float(value)} for name, value in zip(feature_names, native)], key=lambda item: item["importance"], reverse=True)[:30]
     transformed_test = pipeline.named_steps["preprocessor"].transform(X_test)
-    try:
-        perm = permutation_importance(pipeline.named_steps["model"], transformed_test, y_test, n_repeats=4, random_state=42, scoring="f1_weighted")
-        permutation = sorted([{"feature": name, "importance": float(value)} for name, value in zip(feature_names, perm.importances_mean)], key=lambda item: item["importance"], reverse=True)[:30]
-    except Exception:
-        permutation = []
+    permutation, permutation_error = _permutation_importance(
+        pipeline.named_steps["model"],
+        transformed_test,
+        y_test,
+        feature_names,
+        get_settings().explainability_max_rows,
+    )
     sample_predictions, prediction_analysis = _prediction_analysis(
         predictions,
         y_test,
@@ -256,5 +296,7 @@ def train_classifier(frame: pd.DataFrame, model_type: str, config: dict[str, Any
         "sample_predictions": sample_predictions,
         "prediction_analysis": prediction_analysis,
         "tree_text": tree_text,
+        "status": "failed" if permutation_error else "completed",
+        "error": permutation_error,
     }
     return {"pipeline": pipeline, "metrics": metrics, "explainability": explainability, "duration_ms": duration_ms, "parameters": parameters}

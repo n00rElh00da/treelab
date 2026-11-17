@@ -9,6 +9,8 @@ from app.config import Settings
 from app.models import Experiment
 from app.schemas import TrainIn
 from app.services.profiling import parse_csv
+from app.services import training
+from app.services.automl import CONTROLLED_ESTIMATORS, EXTENDED_ESTIMATORS, run_automl
 from app.services.training import TrainingError, _model, train_classifier
 
 
@@ -93,11 +95,83 @@ def test_training_preserves_multiclass_labels_and_probability_mapping() -> None:
     assert all(sum(sample["probabilities"].values()) == pytest.approx(1) for sample in samples)
 
 
-def test_settings_reject_insecure_production_cookies() -> None:
-    with pytest.raises(ValidationError, match="COOKIE_SECURE"):
-        Settings(app_env="production", cookie_secure=False)
+def classification_config() -> dict[str, object]:
+    return {
+        "target": "target",
+        "features": ["feature"],
+        "missing": "Median imputation",
+        "encoding": "One-hot encoding",
+        "scaling": "No scaling",
+        "duplicates": "Keep first row",
+        "imbalance": "Balanced class weights",
+        "split": 75,
+        "validation": "Holdout 20%",
+    }
 
-    assert Settings(app_env="production", cookie_secure=True).cookie_secure is True
+
+def test_automl_estimator_lists_are_explicit() -> None:
+    assert CONTROLLED_ESTIMATORS == ["dt", "rf"]
+    assert EXTENDED_ESTIMATORS == ["rf", "extra_tree", "lgbm", "xgboost", "histgb", "svc", "lrl1"]
+
+
+def test_automl_returns_winning_configuration_and_separate_durations() -> None:
+    frame = pd.DataFrame({"target": ["no", "yes"] * 6, "feature": range(12)})
+
+    result = run_automl(frame, classification_config(), "Extended", 1, "F1 score")
+
+    parameters = result["parameters"]
+    assert parameters["best_estimator"] in EXTENDED_ESTIMATORS
+    assert parameters["best_config"]
+    assert parameters["time_budget"] == 1
+    assert parameters["search_duration_ms"] >= 0
+    assert parameters["total_duration_ms"] >= parameters["search_duration_ms"]
+    assert result["duration_ms"] == parameters["total_duration_ms"]
+    assert result["metrics"]["best_validation_score"] == pytest.approx(1 - result["metrics"]["best_loss"])
+
+
+def test_controlled_automl_fits_and_scores_decision_tree_and_random_forest() -> None:
+    frame = pd.DataFrame({"target": ["no", "yes"] * 6, "feature": range(12)})
+
+    result = run_automl(frame, classification_config(), "Controlled", 1, "F1 score")
+
+    parameters = result["parameters"]
+    scores = parameters["evaluated_estimators"]
+    assert set(scores) == {"dt", "rf"}
+    assert parameters["best_estimator"] in {"dt", "rf"}
+    assert parameters["best_config"]
+    assert result["metrics"]["best_validation_score"] == pytest.approx(scores[parameters["best_estimator"]])
+    if parameters["best_estimator"] == "dt":
+        assert "max_depth" in parameters["best_config"]
+    else:
+        assert "n_estimators" in parameters["best_config"]
+
+
+def test_explainability_failure_keeps_training_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("explainability test failure")
+
+    monkeypatch.setattr(training, "permutation_importance", fail)
+    frame = pd.DataFrame({"target": ["no", "yes"] * 4, "feature": range(8)})
+
+    result = train_classifier(frame, "Decision Tree", classification_config(), {"classWeight": "None"})
+
+    assert result["metrics"]["accuracy"] >= 0
+    assert result["explainability"]["status"] == "failed"
+    assert "explainability test failure" in result["explainability"]["error"]
+
+
+def test_settings_reject_insecure_production_cookies() -> None:
+    production_database = "postgresql+psycopg://user:password@db.example.com:5432/postgres?sslmode=require"
+
+    with pytest.raises(ValidationError, match="COOKIE_SECURE"):
+        Settings(app_env="production", cookie_secure=False, database_url=production_database, session_secret="x" * 32)
+
+    assert Settings(app_env="production", cookie_secure=True, database_url=production_database, session_secret="x" * 32).cookie_secure is True
+
+
+def test_settings_reject_insecure_production_database() -> None:
+    with pytest.raises(ValidationError, match="DATABASE_URL"):
+        Settings(app_env="production", cookie_secure=True, session_secret="x" * 32)
 
 
 def test_experiment_response_serializes_created_at() -> None:

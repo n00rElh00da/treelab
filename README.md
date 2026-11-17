@@ -27,7 +27,7 @@ python -m app.seed_demo
 uvicorn app.main:app --host 0.0.0.0 --port 3000
 ```
 
-The application reads `DATABASE_URL`, `SESSION_SECRET`, `APP_ENV`, `COOKIE_SECURE`, `COOKIE_SAMESITE`, `PORT`, and upload limits from the environment. `DATABASE_URL` is required for authenticated persistence; there is no committed database credential fallback. Passwords use Argon2id when the pinned `argon2-cffi` dependency is installed, while the verifier retains compatibility with the prior scrypt format for constrained migrations. Browser mutation requests with an Origin or Referer are checked against the forwarded request origin or configured CORS origins. Never commit `.env` or credentials. Compose keeps PostgreSQL on the private container network rather than publishing port 5432 to the host. For Preview and production, set `APP_ENV=production` and `COOKIE_SECURE=true`, and use protected environment/secret configuration for `DATABASE_URL`, `SESSION_SECRET`, and `POSTGRES_PASSWORD`; the application rejects production settings that leave secure cookies disabled. Without a DSN, `/api/health` reports an explicit degraded/unconfigured state and the app does not silently fall back to mock data.
+The application reads `DATABASE_URL`, `SESSION_SECRET`, `APP_ENV`, `COOKIE_SECURE`, `COOKIE_SAMESITE`, `PORT`, upload limits, and `EXPLAINABILITY_MAX_ROWS` from the environment. `EXPLAINABILITY_MAX_ROWS` bounds the holdout rows used for permutation importance (default 1,000); it does not change model training or persisted prediction samples. `DATABASE_URL` is required for authenticated persistence; there is no committed database credential fallback. Passwords use Argon2id when the pinned `argon2-cffi` dependency is installed, while the verifier retains compatibility with the prior scrypt format for constrained migrations. Browser mutation requests with an Origin or Referer are checked against the forwarded request origin or configured CORS origins. Never commit `.env` or credentials. Compose keeps PostgreSQL on the private container network rather than publishing port 5432 to the host. For Preview and production, set `APP_ENV=production` and `COOKIE_SECURE=true`, and use protected environment/secret configuration for `DATABASE_URL`, `SESSION_SECRET`, and `POSTGRES_PASSWORD`; the application rejects production settings that leave secure cookies disabled. Without a DSN, `/api/health` reports an explicit degraded/unconfigured state and the app does not silently fall back to mock data.
 
 ## Database and migrations
 
@@ -39,17 +39,30 @@ The initial schema includes users, sessions, datasets, immutable dataset version
 
 `/api/auth/register`, `/api/auth/login`, `/api/auth/logout`, and `/api/auth/me` provide application authentication. `/api/datasets` provides private dataset listing, CSV creation, metadata edits, soft deletion, version uploads, and previews. `/api/experiments` provides owner-scoped history, real model training, owner-scoped serialized model downloads, and real FLAML AutoML. Invalid preprocessing options, target/feature leakage, and datasets without a usable target are rejected with actionable errors. `/api/health` reports application/database readiness. `/manus-routes.json` is served as the required page manifest.
 
-## Azure for Students deployment preparation
+## Render and Supabase staging deployment
 
-This repository is prepared for an Azure deployment but does not provision or deploy anything. A future low-cost deployment can use Azure Database for PostgreSQL Flexible Server plus Azure App Service or Azure Container Apps. Build the container from the included `Dockerfile`, set `PORT=3000`, and configure these runtime values in Azure application settings/secrets:
+This repository includes a `render.yaml` for a small staging deployment. Render runs the
+included Docker application, which serves both the FastAPI API and the static frontend.
+Supabase provides PostgreSQL; no Supabase API key is required by this application.
 
-- `DATABASE_URL=postgresql+psycopg://<user>:<password>@<server>.postgres.database.azure.com:5432/<db>?sslmode=require`
-- `SESSION_SECRET=<long random secret>`
-- `COOKIE_SECURE=true`
-- `COOKIE_SAMESITE=none`
-- `MAX_UPLOAD_BYTES`, `MAX_UPLOAD_ROWS`, and `MAX_UPLOAD_COLUMNS` as appropriate
+1. Create a Supabase project and copy its PostgreSQL connection string. Use the
+   `postgresql+psycopg` scheme and append `?sslmode=require`:
+   `postgresql+psycopg://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require`
+2. Push this repository to GitHub and create a Render Blueprint from the repository.
+   Render will read `render.yaml` and build the Docker service.
+3. In Render, set the secret `DATABASE_URL` to the Supabase TLS connection string.
+4. Set `SESSION_SECRET` to a unique random value of at least 32 characters. Do not
+   commit it or put it in `render.yaml`.
+5. Deploy. The container runs `alembic upgrade head` before starting Uvicorn, and
+   Render checks `/api/health`.
+6. Open the Render URL, register the first account, and verify login, CSV upload,
+   training, AutoML, and logout. The first registered account becomes `admin`;
+   later accounts become `user`.
 
-Allow the application network access to PostgreSQL, require TLS, run `alembic upgrade head` as a release step before starting the new container, and run the demo seed only in a non-production environment. Use Azure Key Vault or App Service secret settings rather than committing credentials. Resource creation, domain setup, billing, and deployment require the owner’s explicit approval and are intentionally not performed here.
+For this together-hosted staging setup, leave `CORS_ORIGINS` empty and use
+`COOKIE_SAMESITE=lax`. Optional Cloudflare DNS should point a domain to the Render
+service; do not cache `/api/*` responses. Run `python -m app.seed_demo` only when
+you intentionally want the demo dataset in the staging database.
 
 ## Validation
 

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 import time
 from typing import Any
 import pandas as pd
@@ -8,6 +9,8 @@ from sklearn.model_selection import train_test_split
 from .training import TrainingError, _feature_names, _make_preprocessor, _model, _permutation_importance, _prediction_analysis, _prepare_frame
 from ..config import get_settings
 from sklearn.tree import DecisionTreeClassifier
+
+logger = logging.getLogger(__name__)
 
 
 CONTROLLED_ESTIMATORS = ["dt", "rf"]
@@ -74,6 +77,7 @@ def run_automl(frame: pd.DataFrame, config: dict[str, Any], mode: str, time_budg
     if not 1 <= time_budget <= 90:
         raise TrainingError("AutoML time budget must be between 1 and 90 seconds")
     operation_started = time.perf_counter()
+    logger.info("AutoML stage=preprocessing mode=%s rows=%s columns=%s", mode, len(frame), len(frame.columns))
     try:
         from flaml import AutoML
     except ImportError as exc:
@@ -92,6 +96,7 @@ def run_automl(frame: pd.DataFrame, config: dict[str, Any], mode: str, time_budg
     preprocessor = _make_preprocessor(frame, features, config["missing"], config["encoding"], config["scaling"])
     transformed_train = preprocessor.fit_transform(X_train)
     transformed_test = preprocessor.transform(X_test)
+    logger.info("AutoML stage=preprocessing_complete mode=%s features=%s", mode, len(features))
     automl = AutoML()
     search_space = CONTROLLED_ESTIMATORS if mode == "Controlled" else EXTENDED_ESTIMATORS
     metric = {"Accuracy": "accuracy", "F1 score": "f1", "Precision": "precision", "Recall": "recall"}.get(metric_label, "f1")
@@ -103,12 +108,14 @@ def run_automl(frame: pd.DataFrame, config: dict[str, Any], mode: str, time_budg
     else:
         fit_options = {"eval_method": "holdout", "split_ratio": 0.8}
     search_started = time.perf_counter()
+    logger.info("AutoML stage=search_start mode=%s validation=%s", mode, validation)
     if mode == "Controlled":
         class_weight = "balanced" if config["imbalance"] == "Balanced class weights" else None
         automl = _fit_controlled(transformed_train, y_train, metric, class_weight)
     else:
         automl.fit(X_train=transformed_train, y_train=y_train, task="classification", time_budget=time_budget, metric=metric, estimator_list=search_space, verbose=0, **fit_options)
     search_duration_ms = int((time.perf_counter() - search_started) * 1000)
+    logger.info("AutoML stage=search_complete mode=%s duration_ms=%s", mode, search_duration_ms)
     predictions = automl.predict(transformed_test)
     probabilities = None
     probability_labels: list[str] = []
@@ -141,6 +148,7 @@ def run_automl(frame: pd.DataFrame, config: dict[str, Any], mode: str, time_budg
         "best_validation_score": 1 - float(automl.best_loss) if automl.best_loss is not None else None,
         "evaluation": {"average": average, "split": int(config["split"]), "random_state": 42, "validation": validation},
     }
+    logger.info("AutoML stage=evaluation_complete mode=%s", mode)
     best = str(automl.best_estimator)
     chosen = automl.model.estimator if hasattr(automl.model, "estimator") else automl.model
     names = _feature_names(preprocessor)
@@ -175,6 +183,7 @@ def run_automl(frame: pd.DataFrame, config: dict[str, Any], mode: str, time_budg
         "status": "failed" if permutation_error else "completed",
         "error": permutation_error,
     }
+    logger.info("AutoML stage=explainability_complete mode=%s status=%s", mode, explainability["status"])
     total_duration_ms = int((time.perf_counter() - operation_started) * 1000)
     best_result = automl.best_result or {}
     evaluated_trials = next((best_result.get(key) for key in ("evaluated_trials", "num_trials") if best_result.get(key) is not None), None)

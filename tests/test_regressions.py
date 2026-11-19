@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from app.api.experiments import model_parameters, to_out
+from app.api.experiments import model_parameters, to_out, validate_json_payload
 from app.config import Settings
 from app.models import Experiment
 from app.schemas import TrainIn
@@ -158,6 +158,17 @@ def test_explainability_failure_keeps_training_result(monkeypatch: pytest.Monkey
     assert result["metrics"]["accuracy"] >= 0
     assert result["explainability"]["status"] == "failed"
     assert "explainability test failure" in result["explainability"]["error"]
+
+
+def test_non_finite_persisted_payload_is_rejected() -> None:
+    with pytest.raises(TrainingError, match="non-serializable or non-finite"):
+        validate_json_payload({"metric": float("nan")}, "AutoML metrics")
+
+
+def test_numpy_scalar_payload_is_cleaned_before_validation() -> None:
+    payload = validate_json_payload({"metric": pd.Series([0.75]).iloc[0]}, "AutoML metrics")
+
+    assert payload == {"metric": pytest.approx(0.75)}
 
 
 def test_settings_reject_insecure_production_cookies() -> None:

@@ -45,11 +45,13 @@ This repository includes a `render.yaml` for a small staging deployment. Render 
 included Docker application, which serves both the FastAPI API and the static frontend.
 Supabase provides PostgreSQL; no Supabase API key is required by this application.
 
-1. Create a Supabase project and copy its PostgreSQL connection string. Use the
-   `postgresql+psycopg` scheme and append `?sslmode=require`:
-   `postgresql+psycopg://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require`
-   A standard `postgresql://...?...sslmode=require` URL is also supported through
-   the explicitly pinned `psycopg2-binary` dependency.
+1. Create a Supabase project and copy the **Session pooler** connection string
+   from the Supabase Dashboard's Connect panel. Use the pooler URL for Render:
+   `postgresql://postgres.<project-ref>:<password>@<pooler-host>:5432/postgres?sslmode=require`
+   Supabase's direct `db.<project-ref>.supabase.co` endpoint is IPv6-only for
+   projects without the IPv4 add-on and is not reachable from an IPv4-only
+   Render service. The pooler remains PostgreSQL, uses TLS, and works with the
+   explicitly pinned `psycopg2-binary` dependency.
 2. Push this repository to GitHub and create a Render Blueprint from the repository.
    Render will read `render.yaml` and build the Docker service.
 3. In Render, set the secret `DATABASE_URL` to the Supabase TLS connection string.

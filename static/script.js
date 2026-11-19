@@ -1,6 +1,10 @@
 const app = document.getElementById('app');
 const modalRoot = document.getElementById('modal-root');
 const toastRegion = document.getElementById('toast-region');
+let chartFrame = 0;
+let workspaceRequestId = 0;
+let dataRequestId = 0;
+const chartIds = ['comparison-metrics-chart','comparison-duration-chart','comparison-class-chart','comparison-confusion-chart','importance-chart','confidence-chart'];
 
 const icons = {
   grid:'<path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/>', database:'<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/>', flask:'<path d="M9 3v6l-5.9 9.2A1.2 1.2 0 0 0 4.1 20h15.8a1.2 1.2 0 0 0 1-1.8L15 9V3M7 3h10M8 15h8"/>', chart:'<path d="M4 19V5M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/>', tree:'<circle cx="12" cy="4" r="2.4"/><circle cx="6" cy="12" r="2.4"/><circle cx="18" cy="12" r="2.4"/><circle cx="4" cy="20" r="2.4"/><circle cx="10" cy="20" r="2.4"/><circle cx="14" cy="20" r="2.4"/><circle cx="20" cy="20" r="2.4"/><path d="M12 6.5V9M12 9 6 9.5M12 9l6 .5M6 14.5V17M6 17h-2M6 17h4M18 14.5V17M18 17h-4M18 17h2"/>', plus:'<path d="M12 5v14M5 12h14"/>', arrow:'<path d="M5 12h14M13 6l6 6-6 6"/>', close:'<path d="m6 6 12 12M18 6 6 18"/>', check:'<path d="m5 12 4 4L19 6"/>', clock:'<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/>', info:'<circle cx="12" cy="12" r="8.5"/><path d="M12 10.5v5M12 7.5h.01"/>', spark:'<path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7L12 3Z"/>', search:'<circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/>', settings:'<path d="M12 8.8a3.2 3.2 0 1 0 0 6.4 3.2 3.2 0 0 0 0-6.4Z"/><path d="m19.4 13.5 1.2 1-.1 1.3-1.8 1.7-1.4-.3-1.1.6-.4 1.4-2.3.4-1-1.1-1.2-.2-1 1-2.3-.8-.3-1.4-1-.8-1.4.1L4 14.5l.6-1.3-.3-1.2-1.1-.8.5-2.3 1.4-.4.5-1.1-.5-1.4 1.7-1.7 1.4.4 1-.6.5-1.4 2.3-.3 1 1.1 1.2.2 1-1 2.3.8.3 1.4 1 .8 1.4-.1 1.4 1.7-.6 1.3.3 1.2 1.1.8-.5 2.3-1.4.4-.5 1.1Z"/>', upload:'<path d="M12 16V4M7 9l5-5 5 5M5 19h14"/>', trash:'<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>', edit:'<path d="m4 16 10-10 4 4L8 20H4zM13 7l4 4"/>', logout:'<path d="M10 17l5-5-5-5M15 12H3M21 19V5a2 2 0 0 0-2-2h-5"/>', external:'<path d="M14 5h5v5M19 5l-8 8"/><path d="M18 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>'
@@ -23,7 +27,11 @@ async function api(path, options={}) {
   const response = await fetch(path, { credentials:'include', ...options });
   const type = response.headers.get('content-type') || '';
   const data = type.includes('application/json') ? await response.json() : await response.text();
-  if (!response.ok) throw new Error(data?.detail || data || `Request failed (${response.status})`);
+  if (!response.ok) {
+    const error = new Error(data?.detail || data || `Request failed (${response.status})`);
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 function notify(title, message, kind='info') {
@@ -62,18 +70,53 @@ function dbStatus() { const ready=state.health?.database==='connected'; return r
 async function refreshHealth() { try { state.health=await api('/api/health'); } catch(error) { state.health={status:'degraded',database:'unavailable',detail:error.message}; } }
 async function refreshData() {
   if (!state.user) return;
-  state.datasets = await api('/api/datasets');
-  state.experiments = await api('/api/experiments');
+  const requestId = ++dataRequestId;
+  const [datasets, experiments] = await Promise.all([api('/api/datasets'), api('/api/experiments')]);
+  if (requestId !== dataRequestId || !state.user) return;
+  state.datasets = datasets;
+  state.experiments = experiments;
   if (!state.selectedDatasetId && state.datasets[0]) state.selectedDatasetId = state.datasets[0].id;
   if (state.selectedDatasetId && !state.datasets.some(d => d.id === state.selectedDatasetId)) state.selectedDatasetId = state.datasets[0]?.id || null;
 }
 async function openWorkspace(id=state.selectedDatasetId, tab='overview') {
+  const requestId = ++workspaceRequestId;
+  const datasetId = id;
   state.selectedDatasetId = id; state.workspaceTab = tab; state.view = 'workspace'; state.preview = null; render();
   const d = selectedDataset();
-  if (d?.version_id) { try { state.preview = await api(`/api/datasets/${d.id}/versions/${d.version_id}/preview`); state.preprocessing.target = d.target_column || state.preview.target_candidates[0] || ''; state.preprocessing.features = state.preview.columns.filter(c => c.name !== state.preprocessing.target).map(c => c.name); } catch (error) { notify('Could not load preview', error.message, 'warning'); } }
+  const versionId = d?.version_id;
+  if (d?.version_id) {
+    try {
+      const preview = await api(`/api/datasets/${d.id}/versions/${versionId}/preview`);
+      if (requestId !== workspaceRequestId || state.selectedDatasetId !== datasetId || state.view !== 'workspace') return;
+      state.preview = preview;
+      state.preprocessing.target = d.target_column || preview.target_candidates[0] || '';
+      state.preprocessing.features = preview.columns.filter(c => c.name !== state.preprocessing.target).map(c => c.name);
+    } catch (error) {
+      if (requestId === workspaceRequestId && state.selectedDatasetId === datasetId) notify('Could not load preview', error.message, 'warning');
+    }
+  }
+  if (requestId !== workspaceRequestId || state.selectedDatasetId !== datasetId || state.view !== 'workspace') return;
   render(); window.scrollTo({top:0,behavior:'smooth'});
 }
-function render() { app.innerHTML = state.user ? shell() : landing(); renderToasts(); if (state.modal) renderModal(); else modalRoot.innerHTML = ''; requestAnimationFrame(renderAnalyticsCharts); }
+function cleanupCharts() {
+  if (chartFrame) {
+    cancelAnimationFrame(chartFrame);
+    chartFrame = 0;
+  }
+  if (!window.Plotly) return;
+  chartIds.forEach(id => {
+    const node = document.getElementById(id);
+    if (node && node.data) window.Plotly.purge(node);
+  });
+}
+function scheduleAnalyticsCharts() {
+  if (chartFrame) cancelAnimationFrame(chartFrame);
+  chartFrame = requestAnimationFrame(() => {
+    chartFrame = 0;
+    renderAnalyticsCharts();
+  });
+}
+function render() { cleanupCharts(); app.innerHTML = state.user ? shell() : landing(); renderToasts(); if (state.modal) renderModal(); else modalRoot.innerHTML = ''; scheduleAnalyticsCharts(); }
 
 function landing() {
   return `<div class="landing"><header class="landing-header"><div class="wordmark"><span class="wordmark-mark"></span><span>TreeLab</span><span class="wordmark-sub">private ML workspace</span></div><div class="landing-header-actions"><button class="btn btn-secondary btn-sm" data-action="open-auth" data-mode="login">Log in ${icon('arrow',13)}</button><button class="btn btn-primary btn-sm" data-action="open-auth" data-mode="register">Create account ${icon('plus',13)}</button></div></header><main><section class="landing-hero"><div><span class="eyebrow">The visual lab for model thinking</span><h1 class="hero-title">Start with a dataset.<br/>End with <span class="accent">evidence.</span></h1><p class="hero-copy">TreeLab turns the machine-learning workflow into a private, durable workspace — from CSV ingestion to real model evaluation and explainability.</p><div class="hero-actions"><button class="btn btn-primary" data-action="open-auth" data-mode="register">Create your workspace ${icon('arrow',15)}</button><button class="btn btn-ghost" data-action="scroll-workflow">See how it works ${icon('arrow',14)}</button></div><div class="hero-note"><span class="dot"></span> PostgreSQL-backed · scikit-learn + FLAML</div></div><div class="product-preview"><div class="preview-topbar"><div class="preview-dots"><span></span><span></span><span></span></div><span class="mono">workspace / customer-churn / overview</span><span>${icon('database',15)}</span></div><div class="preview-body"><div class="preview-rail"><div class="preview-rail-brand"></div><div class="preview-rail-line active"></div><div class="preview-rail-line"></div><div class="preview-rail-line"></div><div class="preview-rail-line"></div><div class="preview-rail-line"></div></div><div class="preview-canvas"><div class="preview-caption"><div><span>DATABASE WORKSPACE</span><strong>Customer Churn Dataset</strong></div><span class="tag green">${icon('check',10)} ready</span></div><div class="preview-grid"><div class="preview-stat"><b>12</b><small>rows in demo</small></div><div class="preview-stat"><b>6</b><small>features</small></div><div class="preview-stat"><b>real</b><small>training path</small></div></div><div class="preview-chart"><span class="preview-badge">POSTGRESQL</span><svg viewBox="0 0 500 190" preserveAspectRatio="none"><path d="M0 150 C48 140,65 114,103 126 S155 105,185 117 S224 81,259 95 S303 64,341 76 S393 45,423 61 S467 24,500 30" fill="none" stroke="#38bdf8" stroke-width="3"/><path d="M0 150 C48 140,65 114,103 126 S155 105,185 117 S224 81,259 95 S303 64,341 76 S393 45,423 61 S467 24,500 30 V190 H0Z" fill="#38bdf8" opacity=".14"/></svg></div></div></div></div></section><section class="landing-section" id="workflow"><div class="section-heading"><div><span class="section-kicker">One workflow, fully visible</span><h2 class="section-title">A lab bench for every decision.</h2></div><p class="section-desc">Upload data, inspect its shape, configure preprocessing, run a real estimator, and trace the result.</p></div><div class="workflow-grid"><div class="workflow-step"><span class="step-no">01 / INPUT</span><h3>Upload dataset</h3><p>Parse and persist CSVs with schema, target candidates, previews, and immutable versions.</p></div><div class="workflow-step"><span class="step-no">02 / UNDERSTAND</span><h3>Explore the signal</h3><p>See distributions, missingness, correlations, and target behavior before fitting.</p></div><div class="workflow-step"><span class="step-no">03 / EXPERIMENT</span><h3>Train and compare</h3><p>Use scikit-learn Decision Trees, Random Forests, or FLAML AutoML with persisted results.</p></div><div class="workflow-step"><span class="step-no">04 / EXPLAIN</span><h3>Make it legible</h3><p>Review feature importance, permutation importance, probabilities, and holdout metrics.</p></div></div></section></main><footer class="landing-footer"><div style="max-width:1240px;margin:auto;display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap"><span>TreeLab / private experimentation workspace</span><span class="mono">Your datasets stay in your workspace</span></div></footer></div>`;
@@ -115,7 +158,7 @@ function drawPlot(id, traces, layout) { const node=document.getElementById(id); 
 function reportRows(experiment) { const report=experiment?.metrics?.classification_report||{}; return Object.entries(report).filter(([key,value])=>value && typeof value==='object' && !['accuracy','macro avg','weighted avg'].includes(key)); }
 function matrixFor(experiment) { const values=experiment?.metrics?.confusion_matrix; return Array.isArray(values)&&values.length?values:null; }
 function renderAnalyticsCharts() {
-  if(!state.user || !window.Plotly) return;
+  if(!state.user || !window.Plotly || state.view !== 'workspace' || !['compare','explain'].includes(state.workspaceTab)) return;
   const runs=selectedExperiments().length?selectedExperiments():datasetExperiments();
   const metricNames=['accuracy','precision','recall','f1']; const metricColors=['#38bdf8','#8b5cf6','#10b981','#f59e0b'];
   const metricTraces=metricNames.map((metric,index)=>{ const values=runs.map(e=>{ const value=Number(e.metrics?.[metric]); return Number.isFinite(value)?value:null; }); return {type:'bar',name:metric.toUpperCase(),x:runs.map(e=>e.model_type||'Run'),y:values,marker:{color:metricColors[index]}}; }).filter(trace=>trace.y.some(value=>value !== null));
@@ -125,6 +168,16 @@ function renderAnalyticsCharts() {
   const confusion=runs.find(matrixFor), labels=confusion?.metrics?.labels||[]; let matrix=matrixFor(confusion); if(matrix&&state.comparisonMode==='normalized') matrix=matrix.map(row=>{const total=row.reduce((sum,value)=>sum+Number(value||0),0);return row.map(value=>total?Number(value)/total:0);}); drawPlot('comparison-confusion-chart',matrix&&labels.length?[{type:'heatmap',z:matrix,x:labels,y:labels,colorscale:'Blues',text:matrix.map(row=>row.map(value=>state.comparisonMode==='normalized'?`${(Number(value)*100).toFixed(1)}%`:String(value))),texttemplate:'%{text}',hovertemplate:'Actual %{y}<br>Predicted %{x}<br>%{text}<extra></extra>'}]:[],{xaxis:{title:'predicted'},yaxis:{title:'actual',autorange:'reversed'},margin:{l:70,b:60}});
   const latest=datasetExperiments()[0], imp=latest?.explainability?.feature_importance||[], perm=latest?.explainability?.permutation_importance||[], features=[...new Set([...imp,...perm].map(item=>item.feature))].slice(0,15); const importanceTraces=features.length?[{type:'bar',name:'Native',y:features,x:features.map(feature=>Number(imp.find(item=>item.feature===feature)?.importance)).map(value=>Number.isFinite(value)?value:0),orientation:'h',marker:{color:'#10b981'}},{type:'bar',name:'Permutation',y:features,x:features.map(feature=>Number(perm.find(item=>item.feature===feature)?.importance)).map(value=>Number.isFinite(value)?value:0),orientation:'h',marker:{color:'#8b5cf6'}}]:[]; drawPlot('importance-chart',importanceTraces,{barmode:'group',xaxis:{title:'importance'},yaxis:{autorange:'reversed'},margin:{l:130,r:18,t:12,b:48}});
   const analysis=latest?.explainability?.prediction_analysis; const edges=analysis?.bin_edges||[], correct=analysis?.correct||[], incorrect=analysis?.incorrect||[]; drawPlot('confidence-chart',edges.length?[{type:'bar',name:'Correct',x:edges.map(value=>`${Math.round(Number(value)*100)}%`),y:correct,marker:{color:'#10b981'}},{type:'bar',name:'Incorrect',x:edges.map(value=>`${Math.round(Number(value)*100)}%`),y:incorrect,marker:{color:'#f87171'}}]:[],{barmode:'stack',xaxis:{title:'confidence bucket'},yaxis:{title:'samples',dtick:1}});
+}
+function updateSelectedSample() {
+  const detail = document.querySelector('.sample-detail');
+  if (!detail) return false;
+  const experiment = datasetExperiments()[0];
+  const samples = experiment?.explainability?.sample_predictions || [];
+  const selectedSample = samples.find(row => row.id === state.selectedSampleId) || samples[0];
+  if (!selectedSample) return false;
+  detail.innerHTML = `<div class="metric-row"><div class="mini-metric"><span>Predicted</span><b>${esc(selectedSample.predicted)}</b></div><div class="mini-metric"><span>Actual</span><b>${esc(selectedSample.actual)}</b></div><div class="mini-metric"><span>Confidence</span><b>${selectedSample.max_probability==null?'—':pct(selectedSample.max_probability)}</b></div><div class="mini-metric"><span>Outcome</span><b>${selectedSample.correct===false?'Error':'Correct'}</b></div></div><div class="sample-values">${Object.entries(selectedSample.values||{}).map(([key,value])=>`<div class="stat-row"><span>${esc(key)}</span><b>${esc(value)}</b></div>`).join('')||'<span class="panel-subtitle">No feature values were persisted for this sample.</span>'}</div>`;
+  return true;
 }
 function metricBars(items) { if(!items?.length) return empty('No metrics yet','Results will appear here after a completed run.'); return `<div class="metric-bars">${items.map(item=>`<div class="metric-bar-row"><div><span>${esc(item.label)}</span><b>${item.suffix || pct(item.value)}</b></div><div class="metric-bar-track"><div class="metric-bar-fill ${item.color||'cyan'}" style="width:${Math.max(2,Math.min(100,Number(item.value||0)*100))}%"></div></div></div>`).join('')}</div>`; }
 function empty(title, message) { return `<div class="empty-state" style="padding:28px 10px"><span class="feature-icon">${icon('info',17)}</span><h3>${esc(title)}</h3><p>${esc(message)}</p></div>`; }
@@ -136,8 +189,55 @@ function renderModal() {
   if (state.modal === 'delete') { const d=selectedDataset(); modalRoot.innerHTML = `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true"><div class="modal-header"><div><h2>Delete ${esc(d.name)}?</h2><p>The dataset will be hidden from your workspace. Its version history is retained for recovery.</p></div><button class="icon-btn" data-action="close-modal">${icon('close',16)}</button></div><div class="modal-footer"><button class="btn btn-ghost btn-sm" data-action="close-modal">Cancel</button><button class="btn btn-primary btn-sm" data-action="confirm-delete">Delete dataset ${icon('trash',12)}</button></div></section></div>`; }
 }
 
-async function handleAuth(form) { const body=Object.fromEntries(new FormData(form).entries()); state.busy=true; render(); try { state.user=await api(state.authMode==='login'?'/api/auth/login':'/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); state.modal=null; state.view='dashboard'; await refreshData(); notify(state.authMode==='login'?'Welcome back':'Workspace created','Your private workspace is ready.','success'); } catch(error){ notify('Authentication failed',error.message,'warning'); } finally { state.busy=false; render(); } }
-async function handleUpload(form) { const data=new FormData(form); state.busy=true; render(); try { let path; if(state.uploadVersion) { path=`/api/datasets/${state.selectedDatasetId}/versions`; } else { path='/api/datasets'; } const result=await api(path,{method:'POST',body:data}); state.modal=null; state.uploadVersion=false; await refreshData(); state.selectedDatasetId=result.id; notify('Dataset persisted','CSV parsed, profiled, and saved as version '+result.version_number+'.','success'); await openWorkspace(result.id,'explorer'); } catch(error){ notify('Upload failed',error.message,'warning'); state.busy=false; render(); } }
+async function handleAuth(form) {
+  const body=Object.fromEntries(new FormData(form).entries());
+  state.busy=true;
+  render();
+  try {
+    state.user=await api(state.authMode==='login'?'/api/auth/login':'/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    state.modal=null;
+    state.view='dashboard';
+    try {
+      await refreshData();
+      notify(state.authMode==='login'?'Welcome back':'Workspace created','Your private workspace is ready.','success');
+    } catch(error) {
+      notify('Workspace unavailable','Authentication succeeded, but workspace data could not be loaded. '+error.message,'warning');
+    }
+  } catch(error) {
+    notify('Authentication failed',error.message,'warning');
+  } finally {
+    state.busy=false;
+    render();
+  }
+}
+async function handleUpload(form) {
+  const data=new FormData(form);
+  state.busy=true;
+  render();
+  try {
+    let path;
+    if(state.uploadVersion) path=`/api/datasets/${state.selectedDatasetId}/versions`;
+    else path='/api/datasets';
+    const result=await api(path,{method:'POST',body:data});
+    state.busy=false;
+    state.modal=null;
+    state.uploadVersion=false;
+    state.selectedDatasetId=result.id;
+    try {
+      await refreshData();
+      notify('Dataset persisted','CSV parsed, profiled, and saved as version '+result.version_number+'.','success');
+      await openWorkspace(result.id,'explorer');
+    } catch(error) {
+      notify('Dataset saved, workspace refresh failed',error.message,'warning');
+      state.view='datasets';
+      render();
+    }
+  } catch(error) {
+    state.busy=false;
+    notify('Upload failed',error.message,'warning');
+    render();
+  }
+}
 async function trainModel() { const d=selectedDataset(); if(!d) return; state.training=true; render(); const cfg=state.modelType==='Decision Tree'?state.modelConfig:state.rfConfig; const parameters={...cfg,classWeight:state.preprocessing.imbalance==='Balanced class weights'?'Balanced':'None'}; try { const experiment=await api('/api/experiments/train',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dataset_id:d.id,model_type:state.modelType,target:state.preprocessing.target,features:state.preprocessing.features,missing:state.preprocessing.missing,encoding:state.preprocessing.encoding,scaling:state.preprocessing.scaling,duplicates:state.preprocessing.duplicates,imbalance:state.preprocessing.imbalance,split:Number(state.preprocessing.split),parameters})}); state.experiments.unshift(experiment); state.selectedComparison=state.selectedComparison.length?state.selectedComparison:[experiment.id]; notify('Model trained','Real holdout metrics and explainability were persisted.','success'); } catch(error){ notify('Training failed',error.message,'warning'); } finally { state.training=false; render(); } }
 async function runAutoML() { const d=selectedDataset(); if(!d) return; state.automlRunning=true; render(); try { const result=await api('/api/experiments/automl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dataset_id:d.id,mode:state.automl.mode,time_budget:Number(state.automl.timeBudget),metric:state.automl.metric,validation:state.automl.validation,target:state.preprocessing.target,features:state.preprocessing.features,missing:state.preprocessing.missing,encoding:state.preprocessing.encoding,scaling:state.preprocessing.scaling,duplicates:state.preprocessing.duplicates,imbalance:state.preprocessing.imbalance,split:Number(state.preprocessing.split)})}); state.experiments.unshift(result); notify('AutoML complete','FLAML selected and persisted a real estimator.','success'); } catch(error){ notify('AutoML failed',error.message,'warning'); } finally { state.automlRunning=false; render(); } }
 
@@ -149,13 +249,34 @@ document.addEventListener('click', async event => { const el=event.target.closes
   if(action==='nav'){setView(el.dataset.view);return;}
   if(action==='go-home'){setView('dashboard');return;}
   if(action==='scroll-workflow'){document.getElementById('workflow')?.scrollIntoView({behavior:'smooth'});return;}
-  if(action==='logout'){try{await api('/api/auth/logout',{method:'POST'});}catch{} state.user=null;state.datasets=[];state.experiments=[];state.view='landing';render();return;}
+  if(action==='logout'){
+    try {
+      await api('/api/auth/logout',{method:'POST'});
+      notify('Signed out','Your session was closed.','success');
+    } catch(error) {
+      notify('Sign-out incomplete','The local view was cleared, but the server session may still be active. '+error.message,'warning');
+    }
+    state.user=null; state.datasets=[]; state.experiments=[]; state.view='landing'; render(); return;
+  }
   if(action==='open-upload'){state.modal='upload';state.uploadVersion=false;render();return;}
   if(action==='open-version-upload'){state.modal='upload';state.uploadVersion=true;render();return;}
   if(action==='open-dataset'){await openWorkspace(el.dataset.id,'overview');return;}
   if(action==='edit-dataset'){state.selectedDatasetId=el.dataset.id;state.modal='edit';render();return;}
   if(action==='delete-dataset'){state.selectedDatasetId=el.dataset.id;state.modal='delete';render();return;}
-  if(action==='confirm-delete'){try{await api(`/api/datasets/${state.selectedDatasetId}`,{method:'DELETE'});state.modal=null;await refreshData();state.view='datasets';notify('Dataset deleted','The dataset was removed from your active workspace.','success');render();}catch(error){notify('Delete failed',error.message,'warning');}return;}
+  if(action==='confirm-delete'){
+    try {
+      await api(`/api/datasets/${state.selectedDatasetId}`,{method:'DELETE'});
+      const deletedId=state.selectedDatasetId;
+      state.datasets=state.datasets.filter(dataset=>dataset.id!==deletedId);
+      state.selectedDatasetId=state.datasets[0]?.id||null;
+      state.modal=null;
+      state.view='datasets';
+      notify('Dataset deleted','The dataset was removed from your active workspace.','success');
+      render();
+      try { await refreshData(); render(); } catch(error) { notify('Workspace refresh failed',error.message,'warning'); }
+    } catch(error) { notify('Delete failed',error.message,'warning'); }
+    return;
+  }
   if(action==='workspace-tab'){if(!selectedDataset() && !['history'].includes(el.dataset.tab)){notify('Choose a dataset','Open a dataset before entering a lab.','warning');return;} if(state.view!=='workspace') await openWorkspace(state.selectedDatasetId,el.dataset.tab); else {state.workspaceTab=el.dataset.tab;render();}return;}
   if(action==='set-model'){state.modelType=el.dataset.model;render();return;}
   if(action==='set-confusion-mode'){state.comparisonMode=el.dataset.mode;render();return;}
@@ -168,9 +289,40 @@ document.addEventListener('input', event => { if(event.target.id==='dataset-sear
 document.addEventListener('change', event => { const el=event.target;
   if(el.dataset.feature){ if(el.checked) state.preprocessing.features.push(el.dataset.feature); else state.preprocessing.features=state.preprocessing.features.filter(v=>v!==el.dataset.feature); render(); return; }
   if(el.dataset.comparison){ if(el.checked) state.selectedComparison.push(el.dataset.comparison); else state.selectedComparison=state.selectedComparison.filter(v=>v!==el.dataset.comparison); render(); return; }
-  if(el.dataset.setting==='explain.sample'){ state.selectedSampleId=el.value; render(); return; }
+  if(el.dataset.setting==='explain.sample'){ state.selectedSampleId=el.value; if(!updateSelectedSample()) render(); return; }
   const setting=el.dataset.setting; if(!setting) return; const [scope,key]=setting.split('.'); const target=scope==='preprocessing'?state.preprocessing:scope==='model'?state.modelConfig:scope==='rf'?state.rfConfig:state.automl; target[key]=el.type==='number'||el.type==='range'?Number(el.value):el.value; if(scope==='preprocessing' && key==='target') state.preprocessing.features=state.preview?.columns.map(c=>c.name).filter(c=>c!==el.value)||[]; render();
 });
-document.addEventListener('submit', async event => { if(event.target.id==='auth-form'){event.preventDefault();await handleAuth(event.target);} if(event.target.id==='upload-form'){event.preventDefault();await handleUpload(event.target);} if(event.target.id==='edit-form'){event.preventDefault();const body=Object.fromEntries(new FormData(event.target).entries());try{await api(`/api/datasets/${state.selectedDatasetId}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});state.modal=null;await refreshData();notify('Dataset updated','Metadata changes were saved.','success');render();}catch(error){notify('Update failed',error.message,'warning');}} });
+document.addEventListener('submit', async event => {
+  if(event.target.id==='auth-form'){event.preventDefault();await handleAuth(event.target);}
+  if(event.target.id==='upload-form'){event.preventDefault();await handleUpload(event.target);}
+  if(event.target.id==='edit-form'){
+    event.preventDefault();
+    const body=Object.fromEntries(new FormData(event.target).entries());
+    try {
+      const updated=await api(`/api/datasets/${state.selectedDatasetId}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const dataset=state.datasets.find(item=>item.id===state.selectedDatasetId);
+      if(dataset) Object.assign(dataset,updated);
+      state.modal=null;
+      notify('Dataset updated','Metadata changes were saved.','success');
+      render();
+      try { await refreshData(); render(); } catch(error) { notify('Workspace refresh failed',error.message,'warning'); }
+    } catch(error) { notify('Update failed',error.message,'warning'); }
+  }
+});
 
-(async function boot(){ await refreshHealth(); try { state.user=await api('/api/auth/me'); state.view='dashboard'; await refreshData(); } catch { state.user=null; } render(); })();
+(async function boot(){
+  await refreshHealth();
+  try {
+    state.user=await api('/api/auth/me');
+    state.view='dashboard';
+    try {
+      await refreshData();
+    } catch(error) {
+      notify('Workspace unavailable','Your session is valid, but workspace data could not be loaded. '+error.message,'warning');
+    }
+  } catch(error) {
+    state.user=null;
+    if(error.status !== 401) notify('Unable to load session','The application could not verify the current session. '+error.message,'warning');
+  }
+  render();
+})();

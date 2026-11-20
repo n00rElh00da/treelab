@@ -30,4 +30,4 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/n00rElh00da/treelab:latest
+          tags: ghcr.io/n00relh00da/treelab:latest

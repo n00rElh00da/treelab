@@ -39,34 +39,6 @@ The initial schema includes users, sessions, datasets, immutable dataset version
 
 `/api/auth/register`, `/api/auth/login`, `/api/auth/logout`, and `/api/auth/me` provide application authentication. `/api/datasets` provides private dataset listing, CSV creation, metadata edits, soft deletion, version uploads, and previews. `/api/experiments` provides owner-scoped history, real model training, owner-scoped serialized model downloads, and real FLAML AutoML. Invalid preprocessing options, target/feature leakage, and datasets without a usable target are rejected with actionable errors. `/api/health` reports application/database readiness. `/manus-routes.json` is served as the required page manifest.
 
-## Render and Supabase staging deployment
-
-This repository includes a `render.yaml` for a small staging deployment. Render runs the
-included Docker application, which serves both the FastAPI API and the static frontend.
-Supabase provides PostgreSQL; no Supabase API key is required by this application.
-
-1. Create a Supabase project and copy the **Session pooler** connection string
-   from the Supabase Dashboard's Connect panel. Use the pooler URL for Render:
-   `postgresql://postgres.<project-ref>:<password>@<pooler-host>:5432/postgres?sslmode=require`
-   Supabase's direct `db.<project-ref>.supabase.co` endpoint is IPv6-only for
-   projects without the IPv4 add-on and is not reachable from an IPv4-only
-   Render service. The pooler remains PostgreSQL, uses TLS, and works with the
-   explicitly pinned `psycopg2-binary` dependency.
-2. Push this repository to GitHub and create a Render Blueprint from the repository.
-   Render will read `render.yaml` and build the Docker service.
-3. In Render, set the secret `DATABASE_URL` to the Supabase TLS connection string.
-4. Set `SESSION_SECRET` to a unique random value of at least 32 characters. Do not
-   commit it or put it in `render.yaml`.
-5. Deploy. The container runs `alembic upgrade head` before starting Uvicorn, and
-   Render checks `/api/health`.
-6. Open the Render URL, register the first account, and verify login, CSV upload,
-   training, AutoML, and logout. The first registered account becomes `admin`;
-   later accounts become `user`.
-
-For this together-hosted staging setup, leave `CORS_ORIGINS` empty and use
-`COOKIE_SAMESITE=lax`. Optional Cloudflare DNS should point a domain to the Render
-service; do not cache `/api/*` responses. Run `python -m app.seed_demo` only when
-you intentionally want the demo dataset in the staging database.
 
 ## Validation
 
